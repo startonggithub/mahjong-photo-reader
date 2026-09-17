@@ -19,4 +19,4 @@ export const useAppCheckDebugToken =
   location.hostname === "localhost" ||
   location.hostname === "127.0.0.1";
 
-export const geminiModelName = "gemini-3.8-flash";
+export const geminiModelName = "gemini-3.5-flash-lite";
