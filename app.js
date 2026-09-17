@@ -18,7 +18,7 @@ import {
   firebaseConfig,
   geminiModelName,
   useAppCheckDebugToken
-} from "./firebase-config.js";
+} from "./firebase-config.js?v=2";
 
 const tileDefinitions = [
   ...Array.from({ length: 9 }, (_, index) => ({
