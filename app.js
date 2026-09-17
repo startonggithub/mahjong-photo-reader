@@ -189,7 +189,6 @@ function initializeFirebase() {
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: recognitionSchema,
-        temperature: 0.1,
         maxOutputTokens: 2048
       }
     });
