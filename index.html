@@ -210,21 +210,6 @@
     .photo-preview { display: none; }
     .photo-preview.active { display: block; }
 
-    .camera-placeholder {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-content: center;
-      gap: 10px;
-      padding: 40px;
-      color: #d7dfda;
-      text-align: center;
-    }
-    .camera-placeholder .icon { font-size: 2.5rem; }
-    .camera-placeholder small { color: #9fb0a7; line-height: 1.45; }
-    .camera-frame.live .camera-placeholder,
-    .camera-frame.has-photo .camera-placeholder { display: none; }
-
     .capture-actions, .recognition-actions, .result-actions {
       display: flex;
       flex-wrap: wrap;
@@ -430,11 +415,6 @@
         </div>
 
         <div class="camera-frame" id="cameraFrame">
-          <div class="camera-placeholder">
-            <span class="icon" aria-hidden="true">▣</span>
-            <strong>Place one set in each half</strong>
-            <small>Keep every tile face inside its labelled section.</small>
-          </div>
           <video id="camera" playsinline muted aria-label="Camera preview"></video>
           <img class="photo-preview" id="photoPreview" alt="Selected upper and lower Mahjong tile sets">
           <div class="camera-split-guide" aria-hidden="true">
