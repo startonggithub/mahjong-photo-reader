@@ -6,8 +6,7 @@ import {
 import {
   getAI,
   getGenerativeModel,
-  GoogleAIBackend,
-  Schema
+  GoogleAIBackend
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-ai.js";
 import {
   appCheckSiteKey,
@@ -56,36 +55,6 @@ const tileDefinitions = [
 const tileByCode = new Map(tileDefinitions.map((tile) => [tile.code, tile]));
 const tileCodes = tileDefinitions.map((tile) => tile.code);
 
-function createSectionSchema() {
-  return Schema.object({
-    properties: {
-      photoQuality: Schema.enumString({
-        enum: ["good", "usable", "poor"]
-      }),
-      tiles: Schema.array({
-        maxItems: 40,
-        items: Schema.object({
-          properties: {
-            code: Schema.enumString({ enum: tileCodes }),
-            confidence: Schema.number()
-          }
-        })
-      }),
-      warnings: Schema.array({
-        maxItems: 12,
-        items: Schema.string()
-      })
-    }
-  });
-}
-
-const recognitionSchema = Schema.object({
-  properties: {
-    upper: createSectionSchema(),
-    lower: createSectionSchema()
-  }
-});
-
 const recognitionPrompt = `
 Act as a careful visual Mahjong tile transcriber. You will receive two cropped
 images from one photograph. The first image is the UPPER SET and the second
@@ -114,6 +83,21 @@ For each classification, give a visual confidence between 0 and 1. Mention
 blur, glare, cropping, overlap, steep perspective, and ambiguous regional
 artwork in the warnings for the affected section. Allowed codes:
 ${tileCodes.join(", ")}.
+
+Return only JSON, with no Markdown or explanation, using exactly this shape:
+{
+  "upper": {
+    "photoQuality": "good|usable|poor",
+    "tiles": [{"code": "ALLOWED_CODE", "confidence": 0.0}],
+    "warnings": []
+  },
+  "lower": {
+    "photoQuality": "good|usable|poor",
+    "tiles": [{"code": "ALLOWED_CODE", "confidence": 0.0}],
+    "warnings": []
+  }
+}
+Return no more than 40 tiles and 12 warnings for either section.
 `;
 
 const elements = {
@@ -228,12 +212,7 @@ function initializeFirebase() {
 
     const ai = getAI(app, { backend: new GoogleAIBackend() });
     recognitionModel = getGenerativeModel(ai, {
-      model: geminiModelName,
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: recognitionSchema,
-        maxOutputTokens: 4096
-      }
+      model: geminiModelName
     });
 
     setConnectionState("Firebase ready", "ready");
@@ -574,6 +553,30 @@ function inlineImagePart(dataUrl) {
   return { inlineData: { mimeType: match[1], data: match[2] } };
 }
 
+function parseRecognitionJson(text) {
+  const raw = typeof text === "string" ? text.trim() : "";
+  if (!raw) throw new Error("Firebase AI returned an empty response.");
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const withoutFence = raw
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+    try {
+      return JSON.parse(withoutFence);
+    } catch {
+      const firstBrace = withoutFence.indexOf("{");
+      const lastBrace = withoutFence.lastIndexOf("}");
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        return JSON.parse(withoutFence.slice(firstBrace, lastBrace + 1));
+      }
+      throw new Error("Firebase AI did not return valid JSON.");
+    }
+  }
+}
+
 function friendlyRecognitionError(error) {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -601,12 +604,10 @@ async function recognizePhoto() {
   try {
     const response = await recognitionModel.generateContent([
       recognitionPrompt,
-      "IMAGE 1 — UPPER SET. Return its tiles only in the upper result:",
       inlineImagePart(sectionImageDataUrls.upper),
-      "IMAGE 2 — LOWER SET. Return its tiles only in the lower result:",
       inlineImagePart(sectionImageDataUrls.lower)
     ]);
-    const parsed = JSON.parse(response.response.text());
+    const parsed = parseRecognitionJson(response.response.text());
     showRecognitionResults(parsed, "Firebase AI");
   } catch (error) {
     console.error("Recognition failed", error);
