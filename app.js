@@ -69,7 +69,7 @@ const recognitionSchema = Schema.object({
       maxItems: 40,
       items: Schema.object({
         properties: {
-          code: Schema.enumString({ enum: tileCodes }),
+          code: Schema.string(),
           confidence: Schema.number()
         }
       })
