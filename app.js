@@ -1,24 +1,20 @@
-import { initializeApp }
-  from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
 import {
   initializeAppCheck,
   ReCaptchaEnterpriseProvider
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js";
-
 import {
   getAI,
   getGenerativeModel,
   GoogleAIBackend,
   Schema
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-ai.js";
-
 import {
   appCheckSiteKey,
   firebaseConfig,
   geminiModelName,
   useAppCheckDebugToken
-} from "./firebase-config.js?v=2";
+} from "./firebase-config.js";
 
 const tileDefinitions = [
   ...Array.from({ length: 9 }, (_, index) => ({
@@ -60,39 +56,51 @@ const tileDefinitions = [
 const tileByCode = new Map(tileDefinitions.map((tile) => [tile.code, tile]));
 const tileCodes = tileDefinitions.map((tile) => tile.code);
 
+function createSectionSchema() {
+  return Schema.object({
+    properties: {
+      photoQuality: Schema.enumString({
+        enum: ["good", "usable", "poor"]
+      }),
+      tiles: Schema.array({
+        maxItems: 40,
+        items: Schema.object({
+          properties: {
+            code: Schema.enumString({ enum: tileCodes }),
+            confidence: Schema.number()
+          }
+        })
+      }),
+      warnings: Schema.array({
+        maxItems: 12,
+        items: Schema.string()
+      })
+    }
+  });
+}
+
 const recognitionSchema = Schema.object({
   properties: {
-    photoQuality: Schema.enumString({
-      enum: ["good", "usable", "poor"]
-    }),
-    tiles: Schema.array({
-      maxItems: 40,
-      items: Schema.object({
-        properties: {
-          code: Schema.string(),
-          confidence: Schema.number()
-        }
-      })
-    }),
-    warnings: Schema.array({
-      maxItems: 12,
-      items: Schema.string()
-    })
+    upper: createSectionSchema(),
+    lower: createSectionSchema()
   }
 });
 
 const recognitionPrompt = `
-Act as a careful visual Mahjong tile transcriber. Inspect the photograph and
-return only the visible, face-up Mahjong tiles belonging to the photographed
-hand. Do not determine whether the hand wins, calculate points, or sort it.
+Act as a careful visual Mahjong tile transcriber. You will receive two cropped
+images from one photograph. The first image is the UPPER SET and the second
+image is the LOWER SET. Return two independent results named upper and lower.
+Never move a tile from one result to the other.
 
-Ordering:
-- Transcribe tiles left-to-right within each row.
-- For multiple rows, process the upper/far row first, then move downward.
+For each image:
+- Return only visible, face-up Mahjong tiles.
+- Transcribe left-to-right within each row.
+- If a crop contains multiple rows, process its upper/far row first.
 - Keep duplicates as separate entries.
 - Ignore racks, dice, counters, table patterns, labels, and face-down tiles.
 - Use UNKNOWN for a visible physical tile whose face cannot be identified.
 - Never invent tiles hidden by cropping or overlap.
+- Do not determine winning patterns, calculate points, or sort the hand.
 
 Visual conventions:
 - CHARACTERS_1..9 are character/wan tiles.
@@ -104,7 +112,8 @@ Visual conventions:
 
 For each classification, give a visual confidence between 0 and 1. Mention
 blur, glare, cropping, overlap, steep perspective, and ambiguous regional
-artwork in warnings. Allowed codes: ${tileCodes.join(", ")}.
+artwork in the warnings for the affected section. Allowed codes:
+${tileCodes.join(", ")}.
 `;
 
 const elements = {
@@ -114,28 +123,61 @@ const elements = {
   camera: document.getElementById("camera"),
   photoPreview: document.getElementById("photoPreview"),
   canvas: document.getElementById("captureCanvas"),
+  upperCanvas: document.getElementById("upperCanvas"),
+  lowerCanvas: document.getElementById("lowerCanvas"),
   startCameraButton: document.getElementById("startCameraButton"),
   captureButton: document.getElementById("captureButton"),
   photoInput: document.getElementById("photoInput"),
   recognizeButton: document.getElementById("recognizeButton"),
   demoButton: document.getElementById("demoButton"),
   status: document.getElementById("status"),
-  qualityBadge: document.getElementById("qualityBadge"),
-  countBadge: document.getElementById("countBadge"),
-  resultEmpty: document.getElementById("resultEmpty"),
-  tileList: document.getElementById("tileList"),
-  warningList: document.getElementById("warningList"),
   resultActions: document.getElementById("resultActions"),
-  addTileButton: document.getElementById("addTileButton"),
   confirmButton: document.getElementById("confirmButton"),
   confirmedOutput: document.getElementById("confirmedOutput")
 };
 
+const sectionStates = {
+  upper: {
+    key: "upper",
+    label: "Upper set",
+    tiles: [],
+    warnings: [],
+    photoQuality: "",
+    loaded: false,
+    elements: {
+      qualityBadge: document.getElementById("upperQualityBadge"),
+      countBadge: document.getElementById("upperCountBadge"),
+      resultEmpty: document.getElementById("upperResultEmpty"),
+      tileList: document.getElementById("upperTileList"),
+      warningList: document.getElementById("upperWarningList"),
+      sectionActions: document.getElementById("upperSectionActions"),
+      addTileButton: document.getElementById("upperAddTileButton")
+    }
+  },
+  lower: {
+    key: "lower",
+    label: "Lower set",
+    tiles: [],
+    warnings: [],
+    photoQuality: "",
+    loaded: false,
+    elements: {
+      qualityBadge: document.getElementById("lowerQualityBadge"),
+      countBadge: document.getElementById("lowerCountBadge"),
+      resultEmpty: document.getElementById("lowerResultEmpty"),
+      tileList: document.getElementById("lowerTileList"),
+      warningList: document.getElementById("lowerWarningList"),
+      sectionActions: document.getElementById("lowerSectionActions"),
+      addTileButton: document.getElementById("lowerAddTileButton")
+    }
+  }
+};
+
+const sectionKeys = Object.keys(sectionStates);
+const sectionImageDataUrls = { upper: null, lower: null };
 let cameraStream = null;
-let imageDataUrl = null;
+let fullImageDataUrl = null;
 let recognitionModel = null;
-let recognizedTiles = [];
-let resultsLoaded = false;
 let recognizing = false;
 
 function hasPlaceholder(value) {
@@ -159,7 +201,8 @@ function setStatus(message, state = "") {
 }
 
 function syncRecognizeButton() {
-  elements.recognizeButton.disabled = !imageDataUrl || !recognitionModel || recognizing;
+  const bothSectionsReady = sectionKeys.every((key) => Boolean(sectionImageDataUrls[key]));
+  elements.recognizeButton.disabled = !bothSectionsReady || !recognitionModel || recognizing;
 }
 
 function initializeFirebase() {
@@ -189,7 +232,7 @@ function initializeFirebase() {
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: recognitionSchema,
-        maxOutputTokens: 2048
+        maxOutputTokens: 4096
       }
     });
 
@@ -216,6 +259,13 @@ function stopCamera() {
   elements.startCameraButton.textContent = "Start camera";
 }
 
+function clearPreparedPhoto() {
+  fullImageDataUrl = null;
+  sectionImageDataUrls.upper = null;
+  sectionImageDataUrls.lower = null;
+  syncRecognizeButton();
+}
+
 async function startCamera() {
   if (!window.isSecureContext) {
     setStatus("Camera access requires HTTPS or localhost. You can still choose a saved photo.", "error");
@@ -228,6 +278,8 @@ async function startCamera() {
 
   try {
     stopCamera();
+    clearPreparedPhoto();
+    clearRecognitionResults();
     setStatus("Requesting camera permission…", "working");
     cameraStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -245,31 +297,52 @@ async function startCamera() {
     elements.cameraFrame.classList.remove("has-photo");
     elements.captureButton.disabled = false;
     elements.startCameraButton.textContent = "Restart camera";
-    setStatus("Camera ready. Align the tiles inside the guide, then take the photo.");
+    setStatus("Camera ready. Put one tile set above the line and the other below it, then take the photo.");
   } catch (error) {
     stopCamera();
     setStatus(`Could not start the camera: ${error.message}. Try “Choose photo.”`, "error");
   }
 }
 
-function clearRecognitionResult() {
-  recognizedTiles = [];
-  resultsLoaded = false;
-  elements.tileList.replaceChildren();
-  elements.resultEmpty.hidden = false;
-  elements.resultEmpty.textContent = "Recognition results will appear here. AI can make mistakes, so always check the tile faces before scoring.";
+function clearRecognitionResults() {
+  for (const key of sectionKeys) {
+    const section = sectionStates[key];
+    section.tiles = [];
+    section.warnings = [];
+    section.photoQuality = "";
+    section.loaded = false;
+    renderSection(key);
+  }
   elements.resultActions.hidden = true;
-  elements.countBadge.hidden = true;
-  setQuality("");
-  renderWarnings([]);
   elements.confirmedOutput.classList.remove("active");
+}
+
+function cropCanvas(sourceCanvas, targetCanvas, sourceY, cropHeight) {
+  const width = sourceCanvas.width;
+  targetCanvas.width = width;
+  targetCanvas.height = cropHeight;
+  const context = targetCanvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, cropHeight);
+  context.drawImage(
+    sourceCanvas,
+    0,
+    sourceY,
+    width,
+    cropHeight,
+    0,
+    0,
+    width,
+    cropHeight
+  );
+  return targetCanvas.toDataURL("image/jpeg", 0.9);
 }
 
 function drawSourceToCanvas(source, sourceWidth, sourceHeight) {
   const maximumDimension = 2048;
   const scale = Math.min(1, maximumDimension / Math.max(sourceWidth, sourceHeight));
   const width = Math.max(1, Math.round(sourceWidth * scale));
-  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const height = Math.max(2, Math.round(sourceHeight * scale));
 
   elements.canvas.width = width;
   elements.canvas.height = height;
@@ -278,19 +351,24 @@ function drawSourceToCanvas(source, sourceWidth, sourceHeight) {
   context.fillRect(0, 0, width, height);
   context.drawImage(source, 0, 0, width, height);
 
-  imageDataUrl = elements.canvas.toDataURL("image/jpeg", 0.9);
-  elements.photoPreview.src = imageDataUrl;
+  const upperHeight = Math.floor(height / 2);
+  const lowerHeight = height - upperHeight;
+  fullImageDataUrl = elements.canvas.toDataURL("image/jpeg", 0.9);
+  sectionImageDataUrls.upper = cropCanvas(elements.canvas, elements.upperCanvas, 0, upperHeight);
+  sectionImageDataUrls.lower = cropCanvas(elements.canvas, elements.lowerCanvas, upperHeight, lowerHeight);
+
+  elements.photoPreview.src = fullImageDataUrl;
   elements.photoPreview.classList.add("active");
   elements.camera.classList.remove("active");
   elements.cameraFrame.classList.remove("live");
   elements.cameraFrame.classList.add("has-photo");
-  clearRecognitionResult();
+  clearRecognitionResults();
   syncRecognizeButton();
 
   if (recognitionModel) {
-    setStatus(`Photo ready (${width} × ${height}). Press “Recognize tiles.”`);
+    setStatus(`Photo split into upper and lower sections (${width} × ${height}). Press “Recognize both sets.”`);
   } else {
-    setStatus(`Photo ready (${width} × ${height}). Configure Firebase to enable recognition.`, "working");
+    setStatus(`Photo split into upper and lower sections (${width} × ${height}). Configure Firebase to enable recognition.`, "working");
   }
 }
 
@@ -311,7 +389,7 @@ async function loadPhotoFile(file) {
   }
 
   stopCamera();
-  setStatus("Preparing the photo…", "working");
+  setStatus("Preparing and splitting the photo…", "working");
   const objectUrl = URL.createObjectURL(file);
   try {
     const image = new Image();
@@ -327,9 +405,9 @@ async function loadPhotoFile(file) {
   }
 }
 
-function createTileSelect(selectedCode, tileNumber) {
+function createTileSelect(selectedCode, sectionLabel, tileNumber) {
   const select = document.createElement("select");
-  select.setAttribute("aria-label", `Tile ${tileNumber}`);
+  select.setAttribute("aria-label", `${sectionLabel}, tile ${tileNumber}`);
 
   for (const groupName of ["Characters", "Bamboo", "Dots", "Honors", "Bonus", "Other"]) {
     const group = document.createElement("optgroup");
@@ -346,18 +424,22 @@ function createTileSelect(selectedCode, tileNumber) {
   return select;
 }
 
-function renderResults() {
-  elements.tileList.replaceChildren();
-  elements.resultActions.hidden = !resultsLoaded;
-  elements.countBadge.hidden = !resultsLoaded;
-  elements.countBadge.textContent = `${recognizedTiles.length} tile${recognizedTiles.length === 1 ? "" : "s"}`;
-  elements.resultEmpty.hidden = resultsLoaded && recognizedTiles.length > 0;
+function renderSection(sectionKey) {
+  const section = sectionStates[sectionKey];
+  const sectionElements = section.elements;
+  sectionElements.tileList.replaceChildren();
+  sectionElements.sectionActions.hidden = !section.loaded;
+  sectionElements.countBadge.hidden = !section.loaded;
+  sectionElements.countBadge.textContent = `${section.tiles.length} tile${section.tiles.length === 1 ? "" : "s"}`;
+  sectionElements.resultEmpty.hidden = section.loaded && section.tiles.length > 0;
 
-  if (resultsLoaded && recognizedTiles.length === 0) {
-    elements.resultEmpty.textContent = "No face-up Mahjong tiles were detected. Try a clearer photo, or add tiles manually.";
+  if (section.loaded && section.tiles.length === 0) {
+    sectionElements.resultEmpty.textContent = `No face-up Mahjong tiles were detected in the ${sectionKey} section. Add tiles manually or take a clearer photo.`;
+  } else if (!section.loaded) {
+    sectionElements.resultEmpty.textContent = `The ${sectionKey} result list will appear here.`;
   }
 
-  recognizedTiles.forEach((tile, index) => {
+  section.tiles.forEach((tile, index) => {
     const definition = tileByCode.get(tile.code) || tileByCode.get("UNKNOWN");
     const confidencePercent = Math.round(Math.max(0, Math.min(1, tile.confidence)) * 100);
 
@@ -371,7 +453,7 @@ function renderResults() {
 
     const controls = document.createElement("div");
     controls.className = "tile-controls";
-    const select = createTileSelect(tile.code, index + 1);
+    const select = createTileSelect(tile.code, section.label, index + 1);
     const confidence = document.createElement("div");
     confidence.className = "confidence";
     confidence.innerHTML = `<span>${confidencePercent}%</span><div class="confidence-track"><div class="confidence-fill${confidencePercent < 80 ? " low" : ""}" style="width:${confidencePercent}%"></div></div>`;
@@ -379,27 +461,31 @@ function renderResults() {
 
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    const earlier = makeRowButton("←", `Move tile ${index + 1} earlier`, "move-left");
-    const later = makeRowButton("→", `Move tile ${index + 1} later`, "move-right");
-    const remove = makeRowButton("Remove", `Remove tile ${index + 1}`, "remove");
+    const earlier = makeRowButton("←", `Move ${section.label} tile ${index + 1} earlier`, "move-left");
+    const later = makeRowButton("→", `Move ${section.label} tile ${index + 1} later`, "move-right");
+    const remove = makeRowButton("Remove", `Remove ${section.label} tile ${index + 1}`, "remove");
     earlier.disabled = index === 0;
-    later.disabled = index === recognizedTiles.length - 1;
+    later.disabled = index === section.tiles.length - 1;
     actions.append(earlier, later, remove);
 
     select.addEventListener("change", (event) => {
-      recognizedTiles[index] = { code: event.target.value, confidence: 1 };
-      renderResults();
+      section.tiles[index] = { code: event.target.value, confidence: 1 };
+      renderSection(sectionKey);
     });
-    earlier.addEventListener("click", () => moveTile(index, index - 1));
-    later.addEventListener("click", () => moveTile(index, index + 1));
+    earlier.addEventListener("click", () => moveTile(sectionKey, index, index - 1));
+    later.addEventListener("click", () => moveTile(sectionKey, index, index + 1));
     remove.addEventListener("click", () => {
-      recognizedTiles.splice(index, 1);
-      renderResults();
+      section.tiles.splice(index, 1);
+      renderSection(sectionKey);
     });
 
     row.append(face, controls, actions);
-    elements.tileList.appendChild(row);
+    sectionElements.tileList.appendChild(row);
   });
+
+  renderWarnings(sectionKey, section.warnings);
+  setQuality(sectionKey, section.photoQuality);
+  elements.resultActions.hidden = !sectionKeys.every((key) => sectionStates[key].loaded);
 }
 
 function makeRowButton(label, accessibleLabel, extraClass) {
@@ -412,32 +498,37 @@ function makeRowButton(label, accessibleLabel, extraClass) {
   return button;
 }
 
-function moveTile(fromIndex, toIndex) {
-  if (toIndex < 0 || toIndex >= recognizedTiles.length) return;
-  const [tile] = recognizedTiles.splice(fromIndex, 1);
-  recognizedTiles.splice(toIndex, 0, tile);
-  renderResults();
+function moveTile(sectionKey, fromIndex, toIndex) {
+  const section = sectionStates[sectionKey];
+  if (toIndex < 0 || toIndex >= section.tiles.length) return;
+  const [tile] = section.tiles.splice(fromIndex, 1);
+  section.tiles.splice(toIndex, 0, tile);
+  renderSection(sectionKey);
 }
 
-function renderWarnings(warnings) {
-  elements.warningList.replaceChildren();
-  const safeWarnings = Array.isArray(warnings) ? warnings.filter((warning) => typeof warning === "string") : [];
+function renderWarnings(sectionKey, warnings) {
+  const warningList = sectionStates[sectionKey].elements.warningList;
+  warningList.replaceChildren();
+  const safeWarnings = Array.isArray(warnings)
+    ? warnings.filter((warning) => typeof warning === "string")
+    : [];
   for (const warning of safeWarnings) {
     const item = document.createElement("li");
     item.textContent = warning;
-    elements.warningList.appendChild(item);
+    warningList.appendChild(item);
   }
-  elements.warningList.classList.toggle("active", safeWarnings.length > 0);
+  warningList.classList.toggle("active", safeWarnings.length > 0);
 }
 
-function setQuality(quality) {
+function setQuality(sectionKey, quality) {
+  const qualityBadge = sectionStates[sectionKey].elements.qualityBadge;
   const allowed = new Set(["good", "usable", "poor"]);
   const normalized = allowed.has(quality) ? quality : "";
-  elements.qualityBadge.className = `pill${normalized ? ` active ${normalized}` : ""}`;
-  elements.qualityBadge.textContent = normalized ? `${normalized} photo` : "";
+  qualityBadge.className = `pill${normalized ? ` active ${normalized}` : ""}`;
+  qualityBadge.textContent = normalized ? `${normalized} photo` : "";
 }
 
-function normalizeRecognitionResult(value) {
+function normalizeSectionResult(value) {
   const rawTiles = Array.isArray(value?.tiles) ? value.tiles : [];
   const tiles = rawTiles.slice(0, 40).map((tile) => ({
     code: tileByCode.has(tile?.code) ? tile.code : "UNKNOWN",
@@ -454,19 +545,26 @@ function normalizeRecognitionResult(value) {
   return { photoQuality, tiles, warnings };
 }
 
-function showRecognitionResult(value, sourceLabel) {
-  const result = normalizeRecognitionResult(value);
-  recognizedTiles = result.tiles;
-  resultsLoaded = true;
-  renderResults();
-  renderWarnings(result.warnings);
-  setQuality(result.photoQuality);
+function showRecognitionResults(value, sourceLabel) {
+  for (const key of sectionKeys) {
+    const normalized = normalizeSectionResult(value?.[key]);
+    const section = sectionStates[key];
+    section.tiles = normalized.tiles;
+    section.warnings = normalized.warnings;
+    section.photoQuality = normalized.photoQuality;
+    section.loaded = true;
+    renderSection(key);
+  }
+
   elements.confirmedOutput.classList.remove("active");
+  const upperCount = sectionStates.upper.tiles.length;
+  const lowerCount = sectionStates.lower.tiles.length;
+  const totalCount = upperCount + lowerCount;
   setStatus(
-    recognizedTiles.length
-      ? `${sourceLabel} found ${recognizedTiles.length} tile${recognizedTiles.length === 1 ? "" : "s"}. Verify every tile before confirming.`
-      : `${sourceLabel} found no tiles. Try a clearer photograph or add tiles manually.`,
-    recognizedTiles.length ? "" : "error"
+    totalCount
+      ? `${sourceLabel} found ${upperCount} upper tile${upperCount === 1 ? "" : "s"} and ${lowerCount} lower tile${lowerCount === 1 ? "" : "s"}. Verify both lists before confirming.`
+      : `${sourceLabel} found no tiles in either section. Try a clearer photograph or add tiles manually.`,
+    totalCount ? "" : "error"
   );
 }
 
@@ -492,95 +590,153 @@ function friendlyRecognitionError(error) {
 }
 
 async function recognizePhoto() {
-  if (!imageDataUrl || !recognitionModel || recognizing) return;
+  const bothSectionsReady = sectionKeys.every((key) => Boolean(sectionImageDataUrls[key]));
+  if (!bothSectionsReady || !recognitionModel || recognizing) return;
 
   recognizing = true;
   syncRecognizeButton();
-  elements.recognizeButton.innerHTML = '<span class="spinner" aria-hidden="true"></span>Recognizing…';
-  setStatus("Gemini is reading the visible tile faces. This may take several seconds…", "working");
+  elements.recognizeButton.innerHTML = '<span class="spinner" aria-hidden="true"></span>Recognizing both…';
+  setStatus("Gemini is reading the upper and lower tile sets. This may take several seconds…", "working");
 
   try {
     const response = await recognitionModel.generateContent([
       recognitionPrompt,
-      inlineImagePart(imageDataUrl)
+      "IMAGE 1 — UPPER SET. Return its tiles only in the upper result:",
+      inlineImagePart(sectionImageDataUrls.upper),
+      "IMAGE 2 — LOWER SET. Return its tiles only in the lower result:",
+      inlineImagePart(sectionImageDataUrls.lower)
     ]);
     const parsed = JSON.parse(response.response.text());
-    showRecognitionResult(parsed, "Firebase AI");
+    showRecognitionResults(parsed, "Firebase AI");
   } catch (error) {
     console.error("Recognition failed", error);
     setStatus(friendlyRecognitionError(error), "error");
   } finally {
     recognizing = false;
-    elements.recognizeButton.textContent = "Recognize tiles";
+    elements.recognizeButton.textContent = "Recognize both sets";
     syncRecognizeButton();
   }
 }
 
 function loadDemoResult() {
-  showRecognitionResult({
-    photoQuality: "usable",
-    tiles: [
-      { code: "CHARACTERS_1", confidence: 0.98 },
-      { code: "CHARACTERS_2", confidence: 0.97 },
-      { code: "CHARACTERS_3", confidence: 0.96 },
-      { code: "BAMBOO_4", confidence: 0.95 },
-      { code: "BAMBOO_5", confidence: 0.92 },
-      { code: "BAMBOO_6", confidence: 0.94 },
-      { code: "DOTS_7", confidence: 0.91 },
-      { code: "DOTS_8", confidence: 0.89 },
-      { code: "DOTS_9", confidence: 0.93 },
-      { code: "EAST", confidence: 0.96 },
-      { code: "EAST", confidence: 0.95 },
-      { code: "EAST", confidence: 0.95 },
-      { code: "RED_DRAGON", confidence: 0.87 },
-      { code: "RED_DRAGON", confidence: 0.86 }
-    ],
-    warnings: ["Demo data only — no photo was analyzed."]
+  showRecognitionResults({
+    upper: {
+      photoQuality: "good",
+      tiles: [
+        { code: "CHARACTERS_1", confidence: 0.98 },
+        { code: "CHARACTERS_2", confidence: 0.97 },
+        { code: "CHARACTERS_3", confidence: 0.96 },
+        { code: "BAMBOO_4", confidence: 0.95 },
+        { code: "BAMBOO_5", confidence: 0.92 },
+        { code: "BAMBOO_6", confidence: 0.94 },
+        { code: "EAST", confidence: 0.96 }
+      ],
+      warnings: ["Demo upper-set data — no photo was analyzed."]
+    },
+    lower: {
+      photoQuality: "usable",
+      tiles: [
+        { code: "DOTS_1", confidence: 0.97 },
+        { code: "DOTS_2", confidence: 0.95 },
+        { code: "DOTS_3", confidence: 0.94 },
+        { code: "RED_DRAGON", confidence: 0.91 },
+        { code: "RED_DRAGON", confidence: 0.9 },
+        { code: "RED_DRAGON", confidence: 0.89 },
+        { code: "WHITE_DRAGON", confidence: 0.85 }
+      ],
+      warnings: ["Demo lower-set data — no photo was analyzed."]
+    }
   }, "Demo");
 }
 
-function addTile() {
-  recognizedTiles.push({ code: "UNKNOWN", confidence: 0 });
-  resultsLoaded = true;
-  renderResults();
-  elements.tileList.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+function addTile(sectionKey) {
+  const section = sectionStates[sectionKey];
+  section.tiles.push({ code: "UNKNOWN", confidence: 0 });
+  section.loaded = true;
+  renderSection(sectionKey);
+  section.elements.tileList.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function confirmTiles() {
-  const tileCodesOutput = recognizedTiles.map((tile) => tile.code);
-  const unknownCount = tileCodesOutput.filter((code) => code === "UNKNOWN").length;
+function sectionDetail(sectionKey) {
+  const tiles = sectionStates[sectionKey].tiles.map((tile) => ({ ...tile }));
+  return {
+    tileCodes: tiles.map((tile) => tile.code),
+    tiles
+  };
+}
+
+function confirmTileSets() {
+  const upper = sectionDetail("upper");
+  const lower = sectionDetail("lower");
+  const upperUnknownCount = upper.tileCodes.filter((code) => code === "UNKNOWN").length;
+  const lowerUnknownCount = lower.tileCodes.filter((code) => code === "UNKNOWN").length;
+  const unknownCount = upperUnknownCount + lowerUnknownCount;
+
   if (unknownCount > 0) {
-    setStatus(`Correct the ${unknownCount} unknown tile${unknownCount === 1 ? "" : "s"} before continuing.`, "error");
+    const locations = [];
+    if (upperUnknownCount) locations.push(`${upperUnknownCount} upper`);
+    if (lowerUnknownCount) locations.push(`${lowerUnknownCount} lower`);
+    setStatus(`Correct the unknown tiles (${locations.join(", ")}) before continuing.`, "error");
     return;
   }
 
   const detail = {
-    tileCodes: tileCodesOutput,
-    tiles: recognizedTiles.map((tile) => ({ ...tile }))
+    upperTileCodes: upper.tileCodes,
+    lowerTileCodes: lower.tileCodes,
+    upper,
+    lower
   };
   elements.confirmedOutput.textContent = JSON.stringify(detail, null, 2);
   elements.confirmedOutput.classList.add("active");
-  setStatus("Tile codes confirmed and sent to the integration hook.");
+  setStatus("Both result lists were confirmed and sent to the integration hooks.");
 
-  window.dispatchEvent(new CustomEvent("mahjong-tiles-confirmed", { detail }));
+  window.dispatchEvent(new CustomEvent("mahjong-tile-sets-confirmed", { detail }));
+  if (typeof window.onMahjongTileSetsConfirmed === "function") {
+    window.onMahjongTileSetsConfirmed(upper.tileCodes, lower.tileCodes, detail);
+  }
+
+  // Backward compatibility: existing single-list integrations receive one
+  // call for each section, identified by detail.section.
   if (typeof window.onMahjongTilesConfirmed === "function") {
-    window.onMahjongTilesConfirmed(tileCodesOutput, detail);
+    for (const sectionKey of sectionKeys) {
+      const oneSectionDetail = {
+        section: sectionKey,
+        ...detail[sectionKey]
+      };
+      window.dispatchEvent(new CustomEvent("mahjong-tiles-confirmed", { detail: oneSectionDetail }));
+      window.onMahjongTilesConfirmed(oneSectionDetail.tileCodes, oneSectionDetail);
+    }
   }
 }
 
-// Replace this default function with the call to your existing arrangement,
-// winning-pattern, and points logic. It receives an ordered array of codes.
-window.onMahjongTilesConfirmed = window.onMahjongTilesConfirmed || function (codes) {
-  console.log("Confirmed Mahjong tile codes:", codes);
+// Preferred two-list integration hook. Replace this with the call to your
+// existing arrangement, winning-pattern, and points logic.
+window.onMahjongTileSetsConfirmed = window.onMahjongTileSetsConfirmed || function (upperCodes, lowerCodes) {
+  console.log("Confirmed upper Mahjong tile codes:", upperCodes);
+  console.log("Confirmed lower Mahjong tile codes:", lowerCodes);
 };
+
+// Optional backward-compatible hook. When supplied, it is called twice: once
+// with detail.section === "upper" and once with detail.section === "lower".
 
 // A small optional API for integration or automated testing.
 window.MahjongPhotoReader = {
-  getTiles: () => recognizedTiles.map((tile) => ({ ...tile })),
-  setTiles: (tiles) => showRecognitionResult({
-    photoQuality: "usable",
-    tiles,
-    warnings: ["Tile data was supplied by the host application."]
+  getTileSets: () => ({
+    upper: sectionDetail("upper"),
+    lower: sectionDetail("lower")
+  }),
+  getTiles: (sectionKey = "upper") => sectionDetail(sectionKey).tiles,
+  setTileSets: (value) => showRecognitionResults({
+    upper: {
+      photoQuality: "usable",
+      tiles: value?.upper || [],
+      warnings: ["Upper tile data was supplied by the host application."]
+    },
+    lower: {
+      photoQuality: "usable",
+      tiles: value?.lower || [],
+      warnings: ["Lower tile data was supplied by the host application."]
+    }
   }, "Host application")
 };
 
@@ -589,8 +745,10 @@ elements.captureButton.addEventListener("click", capturePhoto);
 elements.photoInput.addEventListener("change", (event) => loadPhotoFile(event.target.files?.[0]));
 elements.recognizeButton.addEventListener("click", recognizePhoto);
 elements.demoButton.addEventListener("click", loadDemoResult);
-elements.addTileButton.addEventListener("click", addTile);
-elements.confirmButton.addEventListener("click", confirmTiles);
+sectionStates.upper.elements.addTileButton.addEventListener("click", () => addTile("upper"));
+sectionStates.lower.elements.addTileButton.addEventListener("click", () => addTile("lower"));
+elements.confirmButton.addEventListener("click", confirmTileSets);
 window.addEventListener("pagehide", stopCamera);
 
+clearRecognitionResults();
 initializeFirebase();

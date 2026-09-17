@@ -5,13 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#12372a">
   <meta name="description" content="Photograph a Mahjong hand and convert the visible tiles to editable tile codes with Firebase AI Logic.">
-  <script src="https://www.google.com/recaptcha/enterprise.js?render=6Le2pr8tAAAAAJok_ANlypsAU9A8OuMvOyfRG4xl"></script>
-  <!-- Replace the variables below. -->
-  <script>
-    function onSubmit(token) {
-      document.getElementById("demo-form").submit();
-    }
-  </script>
   <title>Mahjong Photo Reader</title>
   <style>
     :root {
@@ -178,15 +171,39 @@
         #17231e;
       background-size: 26px 26px;
     }
-    .camera-frame::after {
+    .camera-split-guide {
       position: absolute;
-      inset: 9%;
-      content: "";
+      z-index: 3;
+      inset: 7%;
       pointer-events: none;
-      border: 2px dashed rgba(255,255,255,0.44);
+      border: 2px dashed rgba(255,255,255,0.7);
       border-radius: 12px;
+      box-shadow: 0 0 0 999px rgba(4, 17, 11, 0.08);
     }
-    .camera-frame.has-photo::after { display: none; }
+    .camera-split-guide::after {
+      position: absolute;
+      top: 50%;
+      right: 0;
+      left: 0;
+      content: "";
+      border-top: 3px solid rgba(255,255,255,0.9);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.45);
+    }
+    .split-label {
+      position: absolute;
+      left: 10px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: white;
+      background: rgba(12, 46, 34, 0.82);
+      font-size: 0.68rem;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.28);
+    }
+    .split-label.upper { top: 9px; }
+    .split-label.lower { top: calc(50% + 10px); }
     video, .photo-preview { width: 100%; height: 100%; object-fit: contain; background: #111a16; }
     video { display: none; }
     video.active { display: block; object-fit: cover; }
@@ -237,16 +254,36 @@
     .status.error { color: #792b22; background: var(--red-soft); }
     .status.working { color: #5f430f; background: var(--amber-soft); }
 
-    .result-meta { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .result-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
     .pill { display: none; padding: 7px 10px; border-radius: 999px; font-size: 0.76rem; font-weight: 850; text-transform: capitalize; }
     .pill.active { display: inline-flex; }
     .pill.good { color: #17643f; background: #dff4e7; }
     .pill.usable { color: #805712; background: #fff0cb; }
     .pill.poor { color: #8d3025; background: #fce4e0; }
 
+    .result-group {
+      margin: 18px 20px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.62);
+    }
+    .result-group + .result-group { margin-top: 14px; }
+    .result-group-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #eef5f0;
+    }
+    .result-group-heading h3 { margin: 0; font-family: Georgia, serif; font-size: 1.08rem; }
+    .result-group-heading p { margin: 3px 0 0; color: var(--muted); font-size: 0.75rem; }
+
     .result-empty {
-      margin: 20px;
-      padding: 38px 22px;
+      margin: 14px;
+      padding: 27px 18px;
       border: 1px dashed #bbc6be;
       border-radius: 15px;
       color: var(--muted);
@@ -254,7 +291,7 @@
       line-height: 1.55;
     }
 
-    .tile-list { display: grid; gap: 9px; padding: 18px 20px 12px; }
+    .tile-list { display: grid; gap: 9px; padding: 14px; }
     .tile-row {
       display: grid;
       grid-template-columns: 50px minmax(0, 1fr) auto;
@@ -296,8 +333,9 @@
     .icon-button { min-height: 34px; height: 34px; padding: 0; color: #45534b; background: #edf0ed; font-size: 0.94rem; }
     .icon-button.remove { grid-column: 1 / -1; color: #8a332a; background: #f9e8e5; font-size: 0.7rem; }
 
-    .warnings { display: none; margin: 4px 20px 17px; padding: 12px 13px 12px 32px; border-radius: 12px; color: #6b4a13; background: var(--amber-soft); font-size: 0.85rem; line-height: 1.5; }
+    .warnings { display: none; margin: 0 14px 14px; padding: 12px 13px 12px 32px; border-radius: 12px; color: #6b4a13; background: var(--amber-soft); font-size: 0.85rem; line-height: 1.5; }
     .warnings.active { display: block; }
+    .section-actions { display: flex; padding: 0 14px 14px; }
     .result-actions { padding-top: 5px; }
     .result-actions #confirmButton { flex: 1 1 180px; }
 
@@ -351,13 +389,15 @@
       .camera-frame { margin: 14px; }
       .capture-actions, .recognition-actions, .result-actions { padding-left: 14px; padding-right: 14px; }
       .status { margin-left: 14px; margin-right: 14px; }
-      .tile-list { padding-left: 14px; padding-right: 14px; }
+      .result-group { margin-left: 14px; margin-right: 14px; }
+      .tile-list { padding-left: 10px; padding-right: 10px; }
       .tile-row { grid-template-columns: 43px minmax(0, 1fr); }
       .tile-face { width: 43px; height: 52px; font-size: 2rem; }
       .row-actions { grid-column: 2; display: flex; }
       .icon-button { width: 42px; }
       .icon-button.remove { width: auto; padding: 0 10px; }
-      .warnings, .confirmed-output { margin-left: 14px; margin-right: 14px; }
+      .warnings { margin-left: 10px; margin-right: 10px; }
+      .confirmed-output { margin-left: 14px; margin-right: 14px; }
     }
   </style>
 </head>
@@ -367,7 +407,7 @@
       <div>
         <p class="eyebrow">Camera → codes</p>
         <h1>Mahjong Photo Reader</h1>
-        <p class="subtitle">Take or choose a photo, recognize the visible tiles, correct any mistakes, then send the ordered codes to your existing scoring logic.</p>
+        <p class="subtitle">Place one tile set in the upper half and another in the lower half, take one photo, then verify two separate ordered result lists.</p>
       </div>
       <div class="connection-badge" id="connectionBadge">Checking Firebase</div>
     </div>
@@ -384,21 +424,27 @@
         <div class="card-heading">
           <div>
             <span class="step">Step 1</span>
-            <h2 id="captureTitle">Photograph the hand</h2>
-            <p>Keep every tile face visible, in one or more straight rows.</p>
+            <h2 id="captureTitle">Photograph both tile sets</h2>
+            <p>Place the first set above the centre line and the second set below it.</p>
           </div>
         </div>
 
         <div class="camera-frame" id="cameraFrame">
           <div class="camera-placeholder">
             <span class="icon" aria-hidden="true">▣</span>
-            <strong>Place the complete hand inside the guide</strong>
-            <small>Even light and a straight, close view improve recognition.</small>
+            <strong>Place one set in each half</strong>
+            <small>Keep every tile face inside its labelled section.</small>
           </div>
           <video id="camera" playsinline muted aria-label="Camera preview"></video>
-          <img class="photo-preview" id="photoPreview" alt="Selected Mahjong hand">
+          <img class="photo-preview" id="photoPreview" alt="Selected upper and lower Mahjong tile sets">
+          <div class="camera-split-guide" aria-hidden="true">
+            <span class="split-label upper">Upper set</span>
+            <span class="split-label lower">Lower set</span>
+          </div>
         </div>
         <canvas id="captureCanvas" hidden></canvas>
+        <canvas id="upperCanvas" hidden></canvas>
+        <canvas id="lowerCanvas" hidden></canvas>
 
         <div class="capture-actions">
           <button class="button-secondary" id="startCameraButton" type="button">Start camera</button>
@@ -406,7 +452,7 @@
           <label class="file-button">Choose photo<input id="photoInput" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"></label>
         </div>
         <div class="recognition-actions">
-          <button class="button-primary" id="recognizeButton" type="button" disabled>Recognize tiles</button>
+          <button class="button-primary" id="recognizeButton" type="button" disabled>Recognize both sets</button>
           <button class="button-quiet" id="demoButton" type="button">Load demo result</button>
         </div>
         <div class="status" id="status" role="status" aria-live="polite">Choose a photo or start the camera.</div>
@@ -416,37 +462,59 @@
         <div class="card-heading">
           <div>
             <span class="step">Step 2</span>
-            <h2 id="resultsTitle">Verify the detected tiles</h2>
-            <p>Tiles stay in photographic order. Correct, reorder, add, or remove them before confirming.</p>
-          </div>
-          <div class="result-meta">
-            <span class="pill" id="qualityBadge"></span>
-            <span class="pill active good" id="countBadge" hidden>0 tiles</span>
+            <h2 id="resultsTitle">Verify both result lists</h2>
+            <p>Each section remains independent. Correct, reorder, add, or remove tiles before confirming.</p>
           </div>
         </div>
 
-        <div class="result-empty" id="resultEmpty">Recognition results will appear here. AI can make mistakes, so always check the tile faces before scoring.</div>
-        <div class="tile-list" id="tileList"></div>
-        <ul class="warnings" id="warningList"></ul>
+        <section class="result-group" aria-labelledby="upperResultTitle">
+          <div class="result-group-heading">
+            <div>
+              <h3 id="upperResultTitle">Upper set</h3>
+              <p>Tiles above the centre line</p>
+            </div>
+            <div class="result-meta">
+              <span class="pill" id="upperQualityBadge"></span>
+              <span class="pill active good" id="upperCountBadge" hidden>0 tiles</span>
+            </div>
+          </div>
+          <div class="result-empty" id="upperResultEmpty">The upper result list will appear here.</div>
+          <div class="tile-list" id="upperTileList"></div>
+          <ul class="warnings" id="upperWarningList"></ul>
+          <div class="section-actions" id="upperSectionActions" hidden>
+            <button class="button-secondary" id="upperAddTileButton" type="button">Add tile to upper set</button>
+          </div>
+        </section>
+
+        <section class="result-group" aria-labelledby="lowerResultTitle">
+          <div class="result-group-heading">
+            <div>
+              <h3 id="lowerResultTitle">Lower set</h3>
+              <p>Tiles below the centre line</p>
+            </div>
+            <div class="result-meta">
+              <span class="pill" id="lowerQualityBadge"></span>
+              <span class="pill active good" id="lowerCountBadge" hidden>0 tiles</span>
+            </div>
+          </div>
+          <div class="result-empty" id="lowerResultEmpty">The lower result list will appear here.</div>
+          <div class="tile-list" id="lowerTileList"></div>
+          <ul class="warnings" id="lowerWarningList"></ul>
+          <div class="section-actions" id="lowerSectionActions" hidden>
+            <button class="button-secondary" id="lowerAddTileButton" type="button">Add tile to lower set</button>
+          </div>
+        </section>
 
         <div class="result-actions" id="resultActions" hidden>
-          <button class="button-secondary" id="addTileButton" type="button">Add tile</button>
-          <button class="button-primary" id="confirmButton" type="button">Confirm tile codes</button>
+          <button class="button-primary" id="confirmButton" type="button">Confirm both result lists</button>
         </div>
         <pre class="confirmed-output" id="confirmedOutput"></pre>
       </section>
     </div>
 
-    <p class="privacy-note"><span aria-hidden="true">◉</span><span>The image is resized in this browser and sent to Gemini through Firebase AI Logic only when you press “Recognize tiles.” This sample does not store photos or models in IndexedDB.</span></p>
+    <p class="privacy-note"><span aria-hidden="true">◉</span><span>The photo is resized and split into two crops in this browser. Both crops are sent to Gemini through Firebase AI Logic in one request only when you press “Recognize both sets.” This sample does not store photos or models in IndexedDB.</span></p>
   </main>
 
-  <button class="g-recaptcha"
-      data-sitekey="6Le2pr8tAAAAAJok_ANlypsAU9A8OuMvOyfRG4xl"
-      data-callback='onSubmit'
-      data-action='submit'>
-    Submit
-  </button>
-  
-  <script type="module" src="./app.js?v=6"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
