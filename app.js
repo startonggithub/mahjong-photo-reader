@@ -1,14 +1,18 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import { initializeApp }
+  from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+
 import {
   initializeAppCheck,
   ReCaptchaEnterpriseProvider
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js";
+
 import {
   getAI,
   getGenerativeModel,
   GoogleAIBackend,
   Schema
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-ai.js";
+
 import {
   appCheckSiteKey,
   firebaseConfig,
