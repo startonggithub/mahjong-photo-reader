@@ -55,6 +55,33 @@ const tileDefinitions = [
 const tileByCode = new Map(tileDefinitions.map((tile) => [tile.code, tile]));
 const tileCodes = tileDefinitions.map((tile) => tile.code);
 
+// Codes expected by the existing Mahjong arrangement/scoring logic.
+// Flowers are 71-74 (梅蘭菊竹); seasons are 81-84 (春夏秋冬).
+const outputCodeByTileCode = new Map([
+  ...Array.from({ length: 9 }, (_, index) => [`DOTS_${index + 1}`, String(21 + index)]),
+  ...Array.from({ length: 9 }, (_, index) => [`BAMBOO_${index + 1}`, String(31 + index)]),
+  ...Array.from({ length: 9 }, (_, index) => [`CHARACTERS_${index + 1}`, String(41 + index)]),
+  ["EAST", "51"],
+  ["SOUTH", "53"],
+  ["WEST", "55"],
+  ["NORTH", "57"],
+  ["RED_DRAGON", "61"],
+  ["GREEN_DRAGON", "63"],
+  ["WHITE_DRAGON", "65"],
+  ["FLOWER_PLUM", "71"],
+  ["FLOWER_ORCHID", "72"],
+  ["FLOWER_CHRYSANTHEMUM", "73"],
+  ["FLOWER_BAMBOO", "74"],
+  ["SEASON_SPRING", "81"],
+  ["SEASON_SUMMER", "82"],
+  ["SEASON_AUTUMN", "83"],
+  ["SEASON_WINTER", "84"]
+]);
+
+function toOutputTileCode(code) {
+  return outputCodeByTileCode.get(code) || "UNKNOWN";
+}
+
 const recognitionPrompt = `
 Act as a careful visual Mahjong tile transcriber. You will receive two cropped
 images from one photograph. The first image is the UPPER SET and the second
@@ -659,7 +686,10 @@ function addTile(sectionKey) {
 }
 
 function sectionDetail(sectionKey) {
-  const tiles = sectionStates[sectionKey].tiles.map((tile) => ({ ...tile }));
+  const tiles = sectionStates[sectionKey].tiles.map((tile) => ({
+    ...tile,
+    code: toOutputTileCode(tile.code)
+  }));
   return {
     tileCodes: tiles.map((tile) => tile.code),
     tiles
